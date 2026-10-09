@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .models import Clip, Transcript
 
@@ -67,6 +68,63 @@ def format_transcript(transcript: Transcript) -> str:
     return "\n".join(f"[{s.start:.2f}-{s.end:.2f}] {s.text}" for s in transcript.segments)
 
 
+def build_user_prompt(
+    transcript: Transcript,
+    num_clips: int,
+    min_seconds: float,
+    max_seconds: float,
+    video_title: str | None = None,
+) -> str:
+    header = f"Video title: {video_title}\n\n" if video_title else ""
+    return (
+        f"{header}Find the {num_clips} best clips, each between {min_seconds:g} and "
+        f"{max_seconds:g} seconds long, ordered from most to least viral.\n\n"
+        f"<transcript>\n{format_transcript(transcript)}\n</transcript>"
+    )
+
+
+MANUAL_FORMAT = """\
+Reply with ONLY a JSON object in a single ```json code block, no other text, shaped like:
+
+```json
+{"clips": [{"start": 12.5, "end": 48.0, "title": "...", "hook": "...", "description": "...",
+  "hashtags": ["tag1", "tag2"], "virality_score": 87, "reason": "..."}]}
+```
+"""
+
+
+def build_manual_prompt(
+    transcript: Transcript,
+    num_clips: int = 5,
+    min_seconds: float = 20,
+    max_seconds: float = 60,
+    video_title: str | None = None,
+) -> str:
+    """One self-contained message to paste into a normal Claude chat (no API needed)."""
+    if not transcript.segments:
+        raise ValueError("Transcript is empty; nothing to clip.")
+    return (
+        f"{SYSTEM_PROMPT}\n{MANUAL_FORMAT}\n"
+        f"{build_user_prompt(transcript, num_clips, min_seconds, max_seconds, video_title)}\n"
+    )
+
+
+def parse_reply(text: str) -> list[dict]:
+    """Pull the clips list out of a pasted chat reply (tolerates code fences and extra text)."""
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    body = fenced.group(1) if fenced else text
+    starts = [i for i in (body.find("{"), body.find("[")) if i != -1]
+    if not starts:
+        raise ValueError("No JSON found in the reply.")
+    start = min(starts)
+    closer = "}" if body[start] == "{" else "]"
+    data = json.loads(body[start : body.rfind(closer) + 1])
+    clips = data["clips"] if isinstance(data, dict) else data
+    if not isinstance(clips, list) or not clips:
+        raise ValueError("The reply has no clips in it.")
+    return clips
+
+
 def find_highlights(
     transcript: Transcript,
     num_clips: int = 5,
@@ -83,12 +141,7 @@ def find_highlights(
 
         client = anthropic.Anthropic()
 
-    header = f"Video title: {video_title}\n\n" if video_title else ""
-    user = (
-        f"{header}Find the {num_clips} best clips, each between {min_seconds:g} and "
-        f"{max_seconds:g} seconds long, ordered from most to least viral.\n\n"
-        f"<transcript>\n{format_transcript(transcript)}\n</transcript>"
-    )
+    user = build_user_prompt(transcript, num_clips, min_seconds, max_seconds, video_title)
 
     # Long transcripts make for long requests: stream to avoid HTTP timeouts.
     # fallbacks="default" reroutes a safety-classifier decline to another model.

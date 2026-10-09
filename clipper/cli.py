@@ -6,6 +6,8 @@ A "project" is a folder holding everything for one source video:
         source.mp4        downloaded or copied video
         metadata.json     title etc. (when downloaded)
         transcript.json   word-timestamped transcript
+        claude_prompt.txt copy-paste mode: the prompt to paste into the Claude app
+        claude_reply.txt  copy-paste mode: Claude's answer, pasted back in
         clips.json        clips chosen by Claude (edit by hand if you like)
         renders/          finished vertical clips
         posted.json       what has been posted where
@@ -19,8 +21,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -85,20 +89,109 @@ def step_transcribe(project: Path, model: str, language: str | None, force: bool
     return transcript
 
 
-def step_find(project: Path, num: int, min_s: float, max_s: float, force: bool = False):
+def use_manual_mode(flag: bool) -> bool:
+    """Copy-paste mode when asked for, or automatically when there's no API key."""
+    return flag or not os.environ.get("ANTHROPIC_API_KEY")
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["clip"], input=text.encode("utf-16-le"), check=True)
+        elif sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        else:
+            return False
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def _open_file(path: Path) -> None:
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["notepad.exe", str(path)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-t", str(path)])
+    except OSError:
+        pass
+
+
+def manual_find(project: Path, transcript: Transcript, num: int, min_s: float, max_s: float,
+                title: str | None, force: bool = False) -> list[dict]:
+    """Have the user run the prompt in the Claude app and paste the answer back."""
+    from .highlights import build_manual_prompt, parse_reply
+
+    prompt_path = project / "claude_prompt.txt"
+    reply_path = project / "claude_reply.txt"
+    if force and reply_path.exists():
+        reply_path.unlink()
+
+    def read_reply() -> list[dict] | None:
+        if reply_path.exists() and reply_path.read_text(encoding="utf-8-sig").strip():
+            return parse_reply(reply_path.read_text(encoding="utf-8-sig"))
+        return None
+
+    raw = read_reply()
+    if raw is not None:
+        log(f"✓ using Claude's reply from {reply_path}")
+        return raw
+
+    prompt_path.write_text(build_manual_prompt(transcript, num, min_s, max_s, title), encoding="utf-8")
+    reply_path.write_text("", encoding="utf-8")
+    copied = _copy_to_clipboard(prompt_path.read_text(encoding="utf-8"))
+
+    log("")
+    log("★ COPY-PASTE MODE (free, no API key)")
+    if copied:
+        log("  1. The prompt is already COPIED. Open the Claude app, start a new chat,")
+        log("     press Ctrl+V and send it.")
+    else:
+        log(f"  1. Open {prompt_path}, copy all of it (Ctrl+A, Ctrl+C), paste it into")
+        log("     a new Claude chat and send it.")
+    log("  2. Copy Claude's whole reply (the copy button under it).")
+    log("  3. Notepad is opening claude_reply.txt: paste the reply there, press")
+    log("     Ctrl+S to save, and close Notepad.")
+    log("  4. Come back here and press Enter.")
+    log("")
+    _open_file(reply_path)
+
+    if not sys.stdin.isatty():
+        raise SystemExit(f"Paste Claude's reply into {reply_path}, then run this command again.")
+    while True:
+        input("  Press Enter once you've saved the reply... ")
+        try:
+            raw = read_reply()
+        except (ValueError, KeyError, json.JSONDecodeError) as e:
+            log(f"✗ couldn't read that reply ({e}). Make sure you pasted Claude's whole answer, save, try again.")
+            continue
+        if raw is None:
+            log(f"✗ {reply_path.name} is still empty. Paste the reply, press Ctrl+S, then Enter.")
+            continue
+        return raw
+
+
+def step_find(project: Path, num: int, min_s: float, max_s: float, force: bool = False,
+              manual: bool = False):
     out = project / "clips.json"
     if out.exists() and not force:
         log("✓ clips.json already present")
         return load_clips(out)
-    from .highlights import find_highlights
+    from .highlights import find_highlights, postprocess
 
     transcript = Transcript.load(project / "transcript.json")
     title = None
     meta = project / "metadata.json"
     if meta.exists():
         title = json.loads(meta.read_text()).get("title")
-    log(f"★ asking Claude for the {num} most viral moments")
-    clips = find_highlights(transcript, num, min_s, max_s, video_title=title)
+    if use_manual_mode(manual):
+        raw = manual_find(project, transcript, num, min_s, max_s, title, force)
+        clips = postprocess(raw, transcript, num, min_s, max_s)
+        if not clips:
+            raise SystemExit("None of Claude's clips matched the transcript; delete claude_reply.txt and retry.")
+    else:
+        log(f"★ asking Claude for the {num} most viral moments")
+        clips = find_highlights(transcript, num, min_s, max_s, video_title=title)
     save_clips(clips, out)
     for i, c in enumerate(clips, 1):
         log(f"  {i}. [{c.virality_score:>3}] {c.start:7.1f}s–{c.end:7.1f}s  {c.title}")
@@ -183,6 +276,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("-n", "--clips", type=int, default=5, help="number of clips to make")
         sp.add_argument("--min", dest="min_s", type=float, default=20, help="min clip seconds")
         sp.add_argument("--max", dest="max_s", type=float, default=60, help="max clip seconds")
+        sp.add_argument("--manual", action="store_true",
+                        help="copy-paste with the Claude app instead of the API "
+                             "(automatic when ANTHROPIC_API_KEY isn't set)")
 
     def add_transcribe_opts(sp):
         sp.add_argument("--whisper-model", default="small", help="tiny/base/small/medium/large-v3")
@@ -234,7 +330,7 @@ def main(argv: list[str] | None = None) -> None:
         project = project_dir_for(args.source, args.workspace)
         step_download(args.source, project, args.force)
         step_transcribe(project, args.whisper_model, args.language, args.force)
-        step_find(project, args.clips, args.min_s, args.max_s, args.force)
+        step_find(project, args.clips, args.min_s, args.max_s, args.force, args.manual)
         step_render(project, args.mode, not args.no_hook, args.force)
         if args.post:
             step_post(project, args.post, args.privacy, None)
@@ -246,7 +342,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "transcribe":
         step_transcribe(args.project, args.whisper_model, args.language, args.force)
     elif args.command == "find":
-        step_find(args.project, args.clips, args.min_s, args.max_s, args.force)
+        step_find(args.project, args.clips, args.min_s, args.max_s, args.force, args.manual)
     elif args.command == "render":
         step_render(args.project, args.mode, not args.no_hook, args.force)
     elif args.command == "post":

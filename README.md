@@ -33,6 +33,20 @@ pip install -e ".[all]"          # core + face tracking + YouTube upload
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+### No API key? Use copy-paste mode (free)
+
+If `ANTHROPIC_API_KEY` isn't set, or you pass `--manual`, the clip-picking step
+uses the normal Claude app instead of the API:
+
+1. The clipper writes the prompt to `workspace/<id>/claude_prompt.txt` and copies
+   it to your clipboard (on Windows and macOS).
+2. Paste it into a new Claude chat and send it.
+3. Notepad opens `claude_reply.txt`. Paste Claude's whole reply there, save, and close it.
+4. Press Enter in the terminal. The clipper reads the clips and carries on rendering.
+
+If you close the terminal partway through, paste the reply into `claude_reply.txt`
+and run the same command again. It picks up where it left off.
+
 ## Use
 
 ```bash

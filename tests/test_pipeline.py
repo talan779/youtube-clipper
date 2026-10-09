@@ -171,3 +171,55 @@ def test_tiktok_chunk_plan():
     assert plan_chunks(3_000_000) == (3_000_000, 1)
     size, count = plan_chunks(100 * 1024 * 1024)
     assert size == 10 * 1024 * 1024 and count == 10
+
+
+# --- copy-paste (no API) mode ------------------------------------------------
+
+
+def test_manual_prompt_is_self_contained():
+    prompt = highlights.build_manual_prompt(make_transcript(), 3, 20, 60, "My video")
+    assert "short-form video producer" in prompt
+    assert "```json" in prompt
+    assert "[0.00-4.00]" in prompt and "My video" in prompt
+
+
+@pytest.mark.parametrize("wrap", [
+    lambda j: j,
+    lambda j: f"Here you go!\n\n```json\n{j}\n```\nGood luck.",
+    lambda j: f"```\n{j}\n```",
+])
+def test_parse_reply_tolerates_chat_formatting(wrap):
+    payload = json.dumps({"clips": [raw_clip(0, 24, 88)]})
+    assert highlights.parse_reply(wrap(payload))[0]["virality_score"] == 88
+    assert highlights.parse_reply(json.dumps([raw_clip(0, 24)]))[0]["start"] == 0
+
+
+def test_parse_reply_rejects_garbage():
+    with pytest.raises(ValueError):
+        highlights.parse_reply("sorry, I can't")
+
+
+def test_find_uses_pasted_reply_without_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    project = tmp_path / "proj"
+    project.mkdir()
+    make_transcript().save(project / "transcript.json")
+    (project / "claude_reply.txt").write_text(
+        "```json\n" + json.dumps({"clips": [raw_clip(9, 31, 90, title="Pasted")]}) + "\n```"
+    )
+    main(["find", str(project)])
+    clips = load_clips(project / "clips.json")
+    assert clips[0].title == "Pasted" and (clips[0].start, clips[0].end) == (8, 32)
+
+
+def test_find_without_reply_writes_prompt_and_stops(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO())  # not a terminal
+    project = tmp_path / "proj"
+    project.mkdir()
+    make_transcript().save(project / "transcript.json")
+    with pytest.raises(SystemExit):
+        main(["find", str(project)])
+    assert "short-form video producer" in (project / "claude_prompt.txt").read_text()
+    assert (project / "claude_reply.txt").read_text() == ""
+    assert not (project / "clips.json").exists()
