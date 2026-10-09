@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from .models import Segment, Transcript, Word
@@ -40,17 +41,33 @@ def transcribe(
     device: str = "auto",
     language: str | None = None,
 ) -> Transcript:
+    audio = load_audio(video)
+    try:
+        return _transcribe(audio, model_size, device, language)
+    except RuntimeError as e:
+        # "auto" picks the GPU when one is present, but the CUDA libraries
+        # (cuBLAS/cuDNN) often aren't installed on Windows. Fall back to CPU.
+        gpu_problem = any(k in str(e).lower() for k in ("cublas", "cudnn", "cuda"))
+        if device != "auto" or not gpu_problem:
+            raise
+        print(f"! GPU unavailable ({e}); transcribing on CPU instead", file=sys.stderr, flush=True)
+        return _transcribe(audio, model_size, "cpu", language)
+
+
+def _transcribe(audio, model_size: str, device: str, language: str | None) -> Transcript:
     from faster_whisper import WhisperModel
 
     compute_type = "int8" if device in ("cpu", "auto") else "float16"
     model = WhisperModel(model_size, device=device, compute_type=compute_type)
     raw_segments, info = model.transcribe(
-        load_audio(video),
+        audio,
         language=language,
         word_timestamps=True,
         vad_filter=True,
     )
 
+    # raw_segments is lazy: GPU errors surface while iterating, so this stays
+    # inside the caller's try/except.
     segments: list[Segment] = []
     for seg in raw_segments:
         words = [
