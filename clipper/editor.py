@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -37,7 +38,16 @@ def detect_face_center(video: Path, start: float, end: float, samples: int = 12)
     except ImportError:
         return None
 
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    # OpenCV 5 moved Haar cascades out of the main package; without them we
+    # simply skip face tracking and the caller falls back to the blur layout.
+    try:
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    except AttributeError:
+        print("! face tracking unavailable in this OpenCV version; using blurred background "
+              '(fix: pip install "opencv-python-headless<5")', file=sys.stderr, flush=True)
+        return None
+    if cascade.empty():
+        return None
     cap = cv2.VideoCapture(str(video))
     centers: list[float] = []
     try:

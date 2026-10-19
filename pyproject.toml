@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-facetrack = ["opencv-python-headless>=4.8"]
+facetrack = ["opencv-python-headless>=4.8,<5"]
 youtube = [
     "google-api-python-client>=2.100",
     "google-auth-oauthlib>=1.1",
