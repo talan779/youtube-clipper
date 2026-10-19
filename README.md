@@ -47,6 +47,19 @@ uses the normal Claude app instead of the API:
 If you close the terminal partway through, paste the reply into `claude_reply.txt`
 and run the same command again. It picks up where it left off.
 
+### Streamer clips: facecam on top
+
+For gaming/stream videos with a facecam in a corner, use the split layout:
+
+```
+clipper render workspace/<id> --mode split --force
+```
+
+The first time, a page opens in your browser showing frames from the video.
+Drag a box around the facecam and click Save. Every clip then shows the facecam
+on top and the full video underneath, with captions on the line between them.
+To pick a different spot later, run `clipper facecam workspace/<id>`.
+
 ## Use
 
 ```bash

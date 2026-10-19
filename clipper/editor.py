@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import shutil
@@ -13,7 +14,7 @@ from pathlib import Path
 from .captions import HEIGHT, WIDTH, CaptionStyle, build_ass
 from .models import Clip, Transcript
 
-REFRAME_MODES = ("auto", "face", "center", "blur")
+REFRAME_MODES = ("auto", "face", "center", "blur", "split")
 
 
 def probe(video: Path) -> tuple[int, int, float]:
@@ -71,11 +72,51 @@ def detect_face_center(video: Path, start: float, end: float, samples: int = 12)
     return centers[len(centers) // 2]
 
 
+def _even(v: float) -> int:
+    return max(2, int(round(v / 2)) * 2)
+
+
+def split_layout(src_w: int, src_h: int, box) -> dict:
+    """Facecam crop on top, the whole frame underneath, stacked and centered.
+
+    `box` is (x, y, w, h) as fractions of the source frame.
+    """
+    bx, by, bw, bh = box
+    cx, cy = _even(bx * src_w) if bx > 0 else 0, _even(by * src_h) if by > 0 else 0
+    cw = min(_even(bw * src_w), (src_w - cx) // 2 * 2)
+    ch = min(_even(bh * src_h), (src_h - cy) // 2 * 2)
+    full_h = _even(WIDTH * src_h / src_w)
+    cam_w, cam_h = WIDTH, _even(WIDTH * ch / cw)
+    max_cam_h = HEIGHT - full_h
+    if cam_h > max_cam_h:  # a tall facecam: fit it to the space left above the video
+        cam_h = max_cam_h // 2 * 2
+        cam_w = min(WIDTH, _even(cam_h * cw / ch))
+    top = (HEIGHT - cam_h - full_h) // 2 // 2 * 2
+    return {"crop": (cw, ch, cx, cy), "cam": (cam_w, cam_h), "full_h": full_h,
+            "top": top, "seam": top + cam_h}
+
+
 def build_video_filter(
-    src_w: int, src_h: int, mode: str, face_x: float | None, ass_name: str
+    src_w: int, src_h: int, mode: str, face_x: float | None, ass_name: str,
+    facecam=None,
 ) -> str:
     target_ratio = WIDTH / HEIGHT
-    if src_w / src_h <= target_ratio + 0.01:
+    if mode == "split":
+        if facecam is None:
+            raise ValueError("split mode needs a facecam box; run `clipper facecam <project>`")
+        lay = split_layout(src_w, src_h, facecam)
+        cw, ch, cx, cy = lay["crop"]
+        cam_w, cam_h = lay["cam"]
+        base = (
+            f"[0:v]split=3[bg][cam][full];"
+            f"[bg]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT},gblur=sigma=40,eq=brightness=-0.08[bgb];"
+            f"[cam]crop={cw}:{ch}:{cx}:{cy},scale={cam_w}:{cam_h}[c];"
+            f"[full]scale={WIDTH}:{lay['full_h']}[f];"
+            f"[bgb][c]overlay=(W-w)/2:{lay['top']}[t];"
+            f"[t][f]overlay=0:{lay['seam']}"
+        )
+    elif src_w / src_h <= target_ratio + 0.01:
         # Already vertical (or narrower): fit and pad.
         base = (
             f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
@@ -105,6 +146,7 @@ def render_clip(
     mode: str = "auto",
     style: CaptionStyle | None = None,
     show_hook: bool = True,
+    facecam=None,
 ) -> Path:
     if mode not in REFRAME_MODES:
         raise ValueError(f"mode must be one of {REFRAME_MODES}")
@@ -117,6 +159,13 @@ def render_clip(
 
     src_w, src_h, _ = probe(source)
     face_x = detect_face_center(source, clip.start, clip.end) if mode in ("auto", "face") else None
+    if mode == "split":
+        if facecam is None:
+            raise ValueError("split mode needs a facecam box; run `clipper facecam <project>`")
+        # Put the captions on the seam between the facecam and the video.
+        style = style or CaptionStyle()
+        seam = split_layout(src_w, src_h, facecam)["seam"]
+        style = dataclasses.replace(style, margin_v=max(80, HEIGHT - seam - style.size // 2))
 
     ass = build_ass(
         transcript.words_between(clip.start, clip.end),
@@ -130,7 +179,7 @@ def render_clip(
         # Run ffmpeg inside tmp so the ass filter gets a plain relative filename
         # (avoids filter-graph escaping of ':' and '\' in absolute paths).
         (Path(tmp) / "subs.ass").write_text(ass, encoding="utf-8")
-        vf = build_video_filter(src_w, src_h, mode, face_x, "subs.ass")
+        vf = build_video_filter(src_w, src_h, mode, face_x, "subs.ass", facecam)
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{clip.start:.3f}", "-i", str(source), "-t", f"{clip.duration:.3f}",

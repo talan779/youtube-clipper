@@ -223,3 +223,40 @@ def test_find_without_reply_writes_prompt_and_stops(tmp_path, monkeypatch):
     assert "short-form video producer" in (project / "claude_prompt.txt").read_text()
     assert (project / "claude_reply.txt").read_text() == ""
     assert not (project / "clips.json").exists()
+
+
+# --- split (facecam on top) layout -------------------------------------------
+
+
+def test_split_layout_stacks_cam_over_full_frame():
+    from clipper.editor import split_layout
+    lay = split_layout(1280, 720, (0.03125, 0.6111, 0.25, 0.3333))
+    cam_w, cam_h = lay["cam"]
+    assert cam_w == 1080 and lay["full_h"] == 608
+    assert lay["top"] + cam_h + lay["full_h"] <= 1920
+    assert lay["seam"] == lay["top"] + cam_h
+    assert all(v % 2 == 0 for v in lay["crop"])
+
+
+def test_split_layout_fits_tall_facecam():
+    from clipper.editor import split_layout
+    lay = split_layout(1920, 1080, (0.0, 0.0, 0.1, 0.9))
+    assert lay["cam"][1] + lay["full_h"] <= 1920 and lay["cam"][0] <= 1080
+
+
+def test_facecam_box_validation(tmp_path):
+    from clipper.facecam import load_facecam, save_facecam
+    save_facecam(tmp_path, [0.9, 0.9, 0.5, 0.5])
+    assert load_facecam(tmp_path) == (0.9, 0.9, 0.1, 0.1)
+    with pytest.raises(ValueError):
+        save_facecam(tmp_path, [0.1, 0.1, 0.01, 0.2])
+
+
+@needs_ffmpeg
+def test_render_split_mode(sample_video, tmp_path):
+    t = make_transcript(n_segments=10)
+    clip = Clip(4, 10, "Test", "Hook", "d", ["x"], 50, "r")
+    out = render_clip(sample_video, clip, t, tmp_path / "split.mp4", mode="split",
+                      facecam=(0.05, 0.6, 0.25, 0.33))
+    w, h, _ = probe(out)
+    assert (w, h) == (1080, 1920)

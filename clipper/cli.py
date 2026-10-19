@@ -9,6 +9,7 @@ A "project" is a folder holding everything for one source video:
         claude_prompt.txt copy-paste mode: the prompt to paste into the Claude app
         claude_reply.txt  copy-paste mode: Claude's answer, pasted back in
         clips.json        clips chosen by Claude (edit by hand if you like)
+        facecam.json      where the streamer's facecam is (for --mode split)
         renders/          finished vertical clips
         posted.json       what has been posted where
 
@@ -198,12 +199,29 @@ def step_find(project: Path, num: int, min_s: float, max_s: float, force: bool =
     return clips
 
 
+def step_facecam(project: Path) -> tuple:
+    from .editor import probe
+    from .facecam import pick_facecam
+
+    source = find_source(project)
+    _, _, duration = probe(source)
+    return pick_facecam(source, project, duration)
+
+
 def step_render(project: Path, mode: str, show_hook: bool, force: bool = False) -> list[Path]:
     from .editor import render_clip, slugify
+    from .facecam import load_facecam
 
     source = find_source(project)
     transcript = Transcript.load(project / "transcript.json")
     clips = load_clips(project / "clips.json")
+    facecam = None
+    if mode == "split":
+        facecam = load_facecam(project)
+        if facecam is None:
+            if not sys.stdin.isatty():
+                raise SystemExit(f"No facecam picked yet; run `clipper facecam {project}` first.")
+            facecam = step_facecam(project)
     outputs = []
     for i, clip in enumerate(clips, 1):
         out = project / "renders" / f"{i:02d}-{slugify(clip.title)}.mp4"
@@ -211,7 +229,8 @@ def step_render(project: Path, mode: str, show_hook: bool, force: bool = False) 
             log(f"✓ already rendered: {out.name}")
         else:
             log(f"▶ rendering {i}/{len(clips)}: {clip.title}")
-            render_clip(source, clip, transcript, out, mode=mode, show_hook=show_hook)
+            render_clip(source, clip, transcript, out, mode=mode, show_hook=show_hook,
+                        facecam=facecam)
         outputs.append(out)
     log(f"✓ {len(outputs)} clips in {project / 'renders'}")
     return outputs
@@ -286,7 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_render_opts(sp):
         sp.add_argument("--mode", choices=REFRAME_MODES, default="auto",
-                        help="auto: follow face if found, else blurred background")
+                        help="auto: follow face if found, else blurred background; "
+                             "split: streamer facecam on top, full video below")
         sp.add_argument("--no-hook", action="store_true", help="don't overlay the hook text")
 
     def add_post_opts(sp, flag: str):
@@ -315,6 +335,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("project", type=Path)
         sp.add_argument("--force", action="store_true")
         {"transcribe": add_transcribe_opts, "find": add_find_opts, "render": add_render_opts}[name](sp)
+
+    fc = sub.add_parser("facecam", help="pick where the facecam is (for --mode split)")
+    fc.add_argument("project", type=Path)
 
     post = sub.add_parser("post", help="upload rendered clips")
     post.add_argument("project", type=Path)
@@ -345,6 +368,8 @@ def main(argv: list[str] | None = None) -> None:
         step_find(args.project, args.clips, args.min_s, args.max_s, args.force, args.manual)
     elif args.command == "render":
         step_render(args.project, args.mode, not args.no_hook, args.force)
+    elif args.command == "facecam":
+        step_facecam(args.project)
     elif args.command == "post":
         if not args.to:
             raise SystemExit("--to is required, e.g. --to youtube,tiktok")
