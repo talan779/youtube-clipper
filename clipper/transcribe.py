@@ -40,10 +40,12 @@ def transcribe(
     model_size: str = "small",
     device: str = "auto",
     language: str | None = None,
+    progress=None,
 ) -> Transcript:
+    """`progress`, if given, is called with 0..1 as segments are transcribed."""
     audio = load_audio(video)
     try:
-        return _transcribe(audio, model_size, device, language)
+        return _transcribe(audio, model_size, device, language, progress)
     except RuntimeError as e:
         # "auto" picks the GPU when one is present, but the CUDA libraries
         # (cuBLAS/cuDNN) often aren't installed on Windows. Fall back to CPU.
@@ -51,10 +53,11 @@ def transcribe(
         if device != "auto" or not gpu_problem:
             raise
         print(f"! GPU unavailable ({e}); transcribing on CPU instead", file=sys.stderr, flush=True)
-        return _transcribe(audio, model_size, "cpu", language)
+        return _transcribe(audio, model_size, "cpu", language, progress)
 
 
-def _transcribe(audio, model_size: str, device: str, language: str | None) -> Transcript:
+def _transcribe(audio, model_size: str, device: str, language: str | None,
+                progress=None) -> Transcript:
     from faster_whisper import WhisperModel
 
     compute_type = "int8" if device in ("cpu", "auto") else "float16"
@@ -78,4 +81,6 @@ def _transcribe(audio, model_size: str, device: str, language: str | None) -> Tr
         segments.append(
             Segment(start=round(seg.start, 3), end=round(seg.end, 3), text=seg.text.strip(), words=words)
         )
+        if progress and getattr(info, "duration", 0):
+            progress(min(1.0, seg.end / info.duration))
     return Transcript(language=info.language, segments=segments)

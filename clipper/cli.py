@@ -34,8 +34,13 @@ from .models import Transcript, load_clips, save_clips
 DEFAULT_WORKSPACE = Path("workspace")
 
 
+LOG_SINKS: list = []  # extra listeners (the web UI) for progress messages
+
+
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+    for sink in list(LOG_SINKS):
+        sink(msg)
 
 
 def project_dir_for(source: str, workspace: Path) -> Path:
@@ -76,7 +81,8 @@ def step_download(source: str, project: Path, force: bool = False) -> Path:
     return path
 
 
-def step_transcribe(project: Path, model: str, language: str | None, force: bool = False) -> Transcript:
+def step_transcribe(project: Path, model: str, language: str | None, force: bool = False,
+                    progress=None) -> Transcript:
     out = project / "transcript.json"
     if out.exists() and not force:
         log("✓ transcript already present")
@@ -84,7 +90,8 @@ def step_transcribe(project: Path, model: str, language: str | None, force: bool
     from .transcribe import transcribe
 
     log(f"✎ transcribing with whisper '{model}' (this can take a while on CPU)")
-    transcript = transcribe(find_source(project), model_size=model, language=language)
+    transcript = transcribe(find_source(project), model_size=model, language=language,
+                            progress=progress)
     transcript.save(out)
     log(f"✓ transcript: {len(transcript.segments)} segments, language={transcript.language}")
     return transcript
@@ -269,6 +276,21 @@ def step_post(project: Path, platforms: list[str], privacy: str, only: list[int]
             log(f"✓ posted: {result}")
 
 
+def make_desktop_shortcut() -> None:
+    """Create Desktop\\Clipper.lnk pointing at "Start Clipper.bat" (Windows only)."""
+    repo = Path(__file__).resolve().parent.parent
+    bat = repo / "Start Clipper.bat"
+    if sys.platform != "win32":
+        raise SystemExit(f"Desktop shortcuts are Windows-only; run {bat} or `clipper ui` instead.")
+    ps = (
+        "$d=[Environment]::GetFolderPath('Desktop');"
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'Clipper.lnk'));"
+        f"$s.TargetPath='{bat}';$s.WorkingDirectory='{repo}';$s.Save()"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True)
+    log("✓ 'Clipper' shortcut added to your desktop. Double-click it to start.")
+
+
 # --- CLI -------------------------------------------------------------------
 
 
@@ -342,6 +364,12 @@ def build_parser() -> argparse.ArgumentParser:
     fc = sub.add_parser("facecam", help="pick where the facecam is (for --mode split)")
     fc.add_argument("project", type=Path)
 
+    ui = sub.add_parser("ui", help="open the clipper in your browser (paste a link, get clips)")
+    ui.add_argument("--port", type=int, default=8765)
+    ui.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
+
+    sub.add_parser("shortcut", help="put a 'Clipper' shortcut on the Windows desktop")
+
     post = sub.add_parser("post", help="upload rendered clips")
     post.add_argument("project", type=Path)
     add_post_opts(post, "--to")
@@ -371,6 +399,12 @@ def main(argv: list[str] | None = None) -> None:
         step_find(args.project, args.clips, args.min_s, args.max_s, args.force, args.manual)
     elif args.command == "render":
         step_render(args.project, args.mode, not args.no_hook, args.force, not args.no_captions)
+    elif args.command == "ui":
+        from .web import serve
+
+        serve(args.workspace, port=args.port, open_browser=not args.no_browser)
+    elif args.command == "shortcut":
+        make_desktop_shortcut()
     elif args.command == "facecam":
         step_facecam(args.project)
     elif args.command == "post":

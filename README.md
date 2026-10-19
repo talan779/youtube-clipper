@@ -33,6 +33,16 @@ pip install -e ".[all]"          # core + face tracking + YouTube upload
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+### The easy way: Clipper page
+
+Double-click **Start Clipper.bat** (or run `clipper ui`). A page opens in your
+browser: paste a YouTube link, pick how many clips and the layout, and click
+**Get clips**. It walks you through the Claude copy-paste step and the facecam
+box, then shows your finished clips with Download and Copy caption buttons.
+Keep the black window open while you use it.
+
+Run `clipper shortcut` once to put a **Clipper** shortcut on your desktop.
+
 ### No API key? Use copy-paste mode (free)
 
 If `ANTHROPIC_API_KEY` isn't set, or you pass `--manual`, the clip-picking step

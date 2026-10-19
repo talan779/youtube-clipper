@@ -261,3 +261,39 @@ def test_render_split_mode(sample_video, tmp_path):
                       facecam=(0.05, 0.6, 0.25, 0.33))
     w, h, _ = probe(out)
     assert (w, h) == (1080, 1920)
+
+
+# --- web UI ------------------------------------------------------------------
+
+
+def test_web_ui_state_projects_and_security(tmp_path):
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from clipper import web
+
+    proj = tmp_path / "abc"
+    (proj / "renders").mkdir(parents=True)
+    (proj / "renders" / "01-hello.mp4").write_bytes(b"x" * 500)
+    (proj / "clips.json").write_text(json.dumps([{**raw_clip(0, 20, 77, title="Hello"), "hashtags": ["a"]}]))
+    server = web.make_server(tmp_path, 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/"
+    try:
+        assert json.load(urllib.request.urlopen(base + "api/state"))["stage"] == "idle"
+        clip = json.load(urllib.request.urlopen(base + "api/projects"))["projects"][0]["clips"][0]
+        assert clip["title"] == "Hello" and clip["caption"] == "D #a" and clip["score"] == 77
+        req = urllib.request.Request(base + "media/abc/01-hello.mp4", headers={"Range": "bytes=10-19"})
+        with urllib.request.urlopen(req) as r:
+            assert r.status == 206 and len(r.read()) == 10
+        evil = urllib.request.Request(base + "api/start", data=b"{}", headers={"Origin": "https://evil.example"})
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(evil)
+        assert e.value.code == 403
+        bad = urllib.request.Request(base + "api/start", data=json.dumps({"url": "nope"}).encode())
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(bad)
+        assert e.value.code == 400
+    finally:
+        server.shutdown()
