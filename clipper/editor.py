@@ -76,24 +76,20 @@ def _even(v: float) -> int:
     return max(2, int(round(v / 2)) * 2)
 
 
-def split_layout(src_w: int, src_h: int, box) -> dict:
-    """Facecam crop on top, the whole frame underneath, stacked and centered.
-
-    `box` is (x, y, w, h) as fractions of the source frame.
+def split_layout(src_w: int, src_h: int, box,
+                 cam_share: float = 0.32, game_share: float = 0.49) -> dict:
+    """Streamer layout: facecam across the top, zoomed gameplay in the middle,
+    blurred gameplay filling the bottom. `box` is the facecam as (x, y, w, h)
+    fractions of the source frame.
     """
     bx, by, bw, bh = box
     cx, cy = _even(bx * src_w) if bx > 0 else 0, _even(by * src_h) if by > 0 else 0
     cw = min(_even(bw * src_w), (src_w - cx) // 2 * 2)
     ch = min(_even(bh * src_h), (src_h - cy) // 2 * 2)
-    full_h = _even(WIDTH * src_h / src_w)
-    cam_w, cam_h = WIDTH, _even(WIDTH * ch / cw)
-    max_cam_h = HEIGHT - full_h
-    if cam_h > max_cam_h:  # a tall facecam: fit it to the space left above the video
-        cam_h = max_cam_h // 2 * 2
-        cam_w = min(WIDTH, _even(cam_h * cw / ch))
-    top = (HEIGHT - cam_h - full_h) // 2 // 2 * 2
-    return {"crop": (cw, ch, cx, cy), "cam": (cam_w, cam_h), "full_h": full_h,
-            "top": top, "seam": top + cam_h}
+    cam_h = _even(HEIGHT * cam_share)
+    game_h = _even(HEIGHT * game_share)
+    return {"crop": (cw, ch, cx, cy), "cam": (WIDTH, cam_h), "game_h": game_h,
+            "top": 0, "seam": cam_h, "game_bottom": cam_h + game_h}
 
 
 def build_video_filter(
@@ -107,14 +103,18 @@ def build_video_filter(
         lay = split_layout(src_w, src_h, facecam)
         cw, ch, cx, cy = lay["crop"]
         cam_w, cam_h = lay["cam"]
+        game_h = lay["game_h"]
+        sharp = "flags=lanczos"
         base = (
-            f"[0:v]split=3[bg][cam][full];"
+            f"[0:v]split=3[bg][cam][game];"
             f"[bg]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
-            f"crop={WIDTH}:{HEIGHT},gblur=sigma=40,eq=brightness=-0.08[bgb];"
-            f"[cam]crop={cw}:{ch}:{cx}:{cy},scale={cam_w}:{cam_h}[c];"
-            f"[full]scale={WIDTH}:{lay['full_h']}[f];"
-            f"[bgb][c]overlay=(W-w)/2:{lay['top']}[t];"
-            f"[t][f]overlay=0:{lay['seam']}"
+            f"crop={WIDTH}:{HEIGHT},gblur=sigma=30,eq=brightness=-0.05[bgb];"
+            f"[cam]crop={cw}:{ch}:{cx}:{cy},"
+            f"scale={cam_w}:{cam_h}:force_original_aspect_ratio=increase:{sharp},"
+            f"crop={cam_w}:{cam_h}[c];"
+            f"[game]scale={WIDTH}:{game_h}:force_original_aspect_ratio=increase:{sharp},"
+            f"crop={WIDTH}:{game_h}[g];"
+            f"[bgb][c]overlay=0:0[t];[t][g]overlay=0:{lay['seam']}"
         )
     elif src_w / src_h <= target_ratio + 0.01:
         # Already vertical (or narrower): fit and pad.
@@ -162,10 +162,15 @@ def render_clip(
     if mode == "split":
         if facecam is None:
             raise ValueError("split mode needs a facecam box; run `clipper facecam <project>`")
-        # Put the captions on the seam between the facecam and the video.
+        # Hook on the seam between facecam and gameplay; spoken-word captions
+        # in the blurred strip under the gameplay so they cover nothing.
         style = style or CaptionStyle()
-        seam = split_layout(src_w, src_h, facecam)["seam"]
-        style = dataclasses.replace(style, margin_v=max(80, HEIGHT - seam - style.size // 2))
+        lay = split_layout(src_w, src_h, facecam)
+        caption_center = (lay["game_bottom"] + HEIGHT) // 2 - 30
+        style = dataclasses.replace(style, title_mode=True, title_y=lay["seam"],
+                                    margin_v=HEIGHT - caption_center - style.size // 2,
+                                    words_per_chunk=min(style.words_per_chunk, 3),
+                                    size=min(style.size, 72))
 
     ass = build_ass(
         transcript.words_between(clip.start, clip.end),
@@ -185,7 +190,7 @@ def render_clip(
             "-ss", f"{clip.start:.3f}", "-i", str(source), "-t", f"{clip.duration:.3f}",
             "-filter_complex", vf,
             "-map", "[v]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
             "-r", "30",
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
             "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",

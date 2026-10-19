@@ -25,6 +25,11 @@ class CaptionStyle:
     margin_v: int = 520  # distance from bottom edge
     hook_size: int = 76
     hook_seconds: float = 3.0
+    captions: bool = True
+    # Title mode: show the hook centred at `title_y` (the split-layout seam)
+    # instead of near the top.
+    title_mode: bool = False
+    title_y: int = 614
 
 
 def chunk_words(words: list[Word], max_words: int, max_seconds: float) -> list[list[Word]]:
@@ -96,7 +101,15 @@ def build_ass(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
-    if hook:
+    if hook and st.title_mode:
+        # Same hook look as always, just centred on the facecam/gameplay seam.
+        text = _escape(hook.upper() if st.uppercase else hook)
+        end = min(st.hook_seconds, duration)
+        lines.append(
+            f"Dialogue: 1,{ass_time(0)},{ass_time(end)},Hook,,0,0,0,,"
+            f"{{\\an5\\pos({WIDTH // 2},{st.title_y})\\fad(150,250)}}{text}"
+        )
+    elif hook:
         text = _escape(hook.upper() if st.uppercase else hook)
         end = min(st.hook_seconds, duration)
         lines.append(
@@ -104,7 +117,7 @@ def build_ass(
             f"{{\\fad(150,250)}}{text}"
         )
 
-    for chunk in chunk_words(rel, st.words_per_chunk, st.max_chunk_seconds):
+    for chunk in (chunk_words(rel, st.words_per_chunk, st.max_chunk_seconds) if st.captions else []):
         for i, active in enumerate(chunk):
             start = active.start
             # Hold each highlight until the next word starts so captions don't flicker.

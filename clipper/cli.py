@@ -208,7 +208,9 @@ def step_facecam(project: Path) -> tuple:
     return pick_facecam(source, project, duration)
 
 
-def step_render(project: Path, mode: str, show_hook: bool, force: bool = False) -> list[Path]:
+def step_render(project: Path, mode: str, show_hook: bool, force: bool = False,
+                captions: bool = True) -> list[Path]:
+    from .captions import CaptionStyle
     from .editor import render_clip, slugify
     from .facecam import load_facecam
 
@@ -230,7 +232,7 @@ def step_render(project: Path, mode: str, show_hook: bool, force: bool = False) 
         else:
             log(f"▶ rendering {i}/{len(clips)}: {clip.title}")
             render_clip(source, clip, transcript, out, mode=mode, show_hook=show_hook,
-                        facecam=facecam)
+                        facecam=facecam, style=CaptionStyle(captions=captions))
         outputs.append(out)
     log(f"✓ {len(outputs)} clips in {project / 'renders'}")
     return outputs
@@ -308,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="auto: follow face if found, else blurred background; "
                              "split: streamer facecam on top, full video below")
         sp.add_argument("--no-hook", action="store_true", help="don't overlay the hook text")
+        sp.add_argument("--no-captions", action="store_true", help="no word-by-word captions")
 
     def add_post_opts(sp, flag: str):
         sp.add_argument(flag, type=_parse_platforms, default=[],
@@ -354,7 +357,7 @@ def main(argv: list[str] | None = None) -> None:
         step_download(args.source, project, args.force)
         step_transcribe(project, args.whisper_model, args.language, args.force)
         step_find(project, args.clips, args.min_s, args.max_s, args.force, args.manual)
-        step_render(project, args.mode, not args.no_hook, args.force)
+        step_render(project, args.mode, not args.no_hook, args.force, not args.no_captions)
         if args.post:
             step_post(project, args.post, args.privacy, None)
         print(project)
@@ -367,7 +370,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "find":
         step_find(args.project, args.clips, args.min_s, args.max_s, args.force, args.manual)
     elif args.command == "render":
-        step_render(args.project, args.mode, not args.no_hook, args.force)
+        step_render(args.project, args.mode, not args.no_hook, args.force, not args.no_captions)
     elif args.command == "facecam":
         step_facecam(args.project)
     elif args.command == "post":

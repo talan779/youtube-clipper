@@ -228,20 +228,21 @@ def test_find_without_reply_writes_prompt_and_stops(tmp_path, monkeypatch):
 # --- split (facecam on top) layout -------------------------------------------
 
 
-def test_split_layout_stacks_cam_over_full_frame():
+def test_split_layout_matches_streamer_format():
     from clipper.editor import split_layout
     lay = split_layout(1280, 720, (0.03125, 0.6111, 0.25, 0.3333))
-    cam_w, cam_h = lay["cam"]
-    assert cam_w == 1080 and lay["full_h"] == 608
-    assert lay["top"] + cam_h + lay["full_h"] <= 1920
-    assert lay["seam"] == lay["top"] + cam_h
+    assert lay["top"] == 0 and lay["cam"] == (1080, 614) and lay["seam"] == 614
+    assert lay["game_bottom"] == 614 + lay["game_h"] < 1920
     assert all(v % 2 == 0 for v in lay["crop"])
 
 
-def test_split_layout_fits_tall_facecam():
-    from clipper.editor import split_layout
-    lay = split_layout(1920, 1080, (0.0, 0.0, 0.1, 0.9))
-    assert lay["cam"][1] + lay["full_h"] <= 1920 and lay["cam"][0] <= 1080
+def test_title_mode_puts_hook_on_seam():
+    from clipper.captions import CaptionStyle
+    ass = build_ass([], 0, 10, hook="Joe bart get trolled",
+                    style=CaptionStyle(title_mode=True, title_y=614, captions=False))
+    hook = [l for l in ass.splitlines() if ",Hook," in l and l.startswith("Dialogue")]
+    assert len(hook) == 1 and "\\an5\\pos(540,614)" in hook[0]
+    assert "JOE BART GET TROLLED" in hook[0] and "0:00:03.00" in hook[0]
 
 
 def test_facecam_box_validation(tmp_path):
