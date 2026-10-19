@@ -6,3 +6,4 @@ workspace/
 client_secret*.json
 *.token.json
 .env
+*cookies*.txt

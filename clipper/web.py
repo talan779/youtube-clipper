@@ -99,7 +99,7 @@ class Job:
         except Cancelled:
             self.set(stage="idle")
         except BaseException as e:  # SystemExit from the CLI helpers too
-            msg = str(e) or e.__class__.__name__
+            msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)) or e.__class__.__name__
             if "Permission denied" in msg:
                 msg = ("Windows wouldn't let me overwrite a clip. Close any video player "
                        "that has one of these clips open, then click Get clips again.")
@@ -274,7 +274,7 @@ ol.how { margin:0 0 14px; padding-left:20px; display:grid; gap:10px; }
 ol.how li::marker { color:var(--accent2); font-weight:700; }
 textarea { width:100%; min-height:130px; background:#0f0f15; color:var(--text); border:1px solid var(--line);
   border-radius:10px; padding:10px; font:13px/1.4 ui-monospace,Consolas,monospace; resize:vertical; }
-.err { color:var(--bad); margin:8px 0 0; font-size:14px; }
+.err { color:var(--bad); margin:8px 0 0; font-size:14px; white-space:pre-line; }
 .errcard { border-color:#5a2433; background:#1d1116; }
 #stage { position:relative; user-select:none; touch-action:none; cursor:crosshair; border-radius:10px; overflow:hidden; background:#000; }
 #stage img { display:block; width:100%; pointer-events:none; }
